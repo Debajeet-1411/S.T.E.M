@@ -1,17 +1,27 @@
 import yfinance as yf
 
-ticker = "AAPL"
+# List of ticker symbols
+tickers = ["AAPL", "MSFT", "TSLA", "GOOGL", "BTC-USD"]
 
-# Download data from Jan 1, 2021 to today with 3-month interval
-df_price = yf.download(
-    ticker,
+# Download all ticker data at once
+df_all = yf.download(
+    tickers,
     start="2021-01-01",
-    end="2025-06-14",           # Or use end="today" for dynamic latest
-    interval="3mo"              # 3-month interval
+    end="2025-06-14",
+    interval="3mo",
+    group_by="ticker",   # Important for multiple stocks
+    auto_adjust=True     # Adjust for splits/dividends
 )
 
-# Optional: Keep only the Close column and rename it to 'price'
-df_price = df_price[["Close"]].rename(columns={"Close": "price"})
+# Keep only the 'Close' price for each stock
+df_prices = {}
 
-# Show result
-print(df_price)
+for ticker in tickers:
+    df_prices[ticker] = df_all[ticker][["Close"]].rename(columns={"Close": ticker})
+
+# Combine all Close prices into a single DataFrame
+from functools import reduce
+df_merged = reduce(lambda left, right: left.join(right, how='outer'), df_prices.values())
+
+# Display the final combined table
+print(df_merged)
