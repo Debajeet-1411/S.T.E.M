@@ -1,8 +1,8 @@
 import os
-import requests
 import pandas as pd
 import joblib
 import yfinance as yf
+import wikipedia
 from datetime import datetime, timedelta
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from sklearn.linear_model import LogisticRegression
@@ -12,10 +12,8 @@ from sklearn.metrics import classification_report, accuracy_score
 # ────── CONFIGURATION ─────────────────────────────────────────
 TICKERS = ["TSLA", "GOOGL", "AAPL", "AMZN", "MSFT"]
 CSV_STOCK = "stock_data.csv"
-CSV_NEWS = "NEWS_HEAD.csv"
-CSV_FINAL = "sentiment_vs_stock.csv"
+CSV_WIKI = "wiki_sentiment.csv"
 MODEL_FILE = "sentiment_stock_model.joblib"
-NEWS_API_KEY = "pub_473f7f62848e462cb19ac6c0c3211955"  # Replace with your actual NewsAPI key
 
 # ────── 1. UPDATE STOCK HISTORY ──────────────────────────────
 def update_stock_history():
@@ -49,86 +47,46 @@ def update_stock_history():
     print(f"📈 Stock data updated with {len(merged) - len(hist)} new rows.")
     return merged
 
-# ────── 2. FETCH HEADLINES ───────────────────────────────────
-def fetch_headlines_for_date(date: str, ticker: str):
-    headlines = []
+# ────── 2. FETCH WIKIPEDIA CONTENT ───────────────────────────
+def fetch_wikipedia_summary(ticker):
+    name_map = {
+        "TSLA": "Tesla, Inc.",
+        "GOOGL": "Alphabet Inc.",
+        "AAPL": "Apple Inc.",
+        "AMZN": "Amazon (company)",
+        "MSFT": "Microsoft"
+    }
+    try:
+        title = name_map.get(ticker, ticker)
+        summary = wikipedia.page(title).content
+        return summary[:3000]  # Limit to 3000 characters
+    except Exception as e:
+        print(f"❌ Wikipedia fetch failed for {ticker}: {e}")
+        return ""
 
-    if NEWS_API_KEY:
-        try:
-            url = (
-                f"https://newsapi.org/v2/everything?q={ticker}&from={date}&to={date}"
-                f"&sortBy=publishedAt&language=en&apiKey={NEWS_API_KEY}"
-            )
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                articles = data.get("articles", [])
-                headlines = [a["title"] for a in articles if "title" in a]
-                if headlines:
-                    return headlines
-            else:
-                print(f"❌ NewsAPI error {response.status_code} for {ticker} on {date}")
-        except Exception as e:
-            print(f"❌ NewsAPI fetch failed for {ticker} on {date}: {e}")
-    else:
-        print(f"❌ No NewsAPI key set.")
-
-    return []
-
-# ────── 3. UPDATE NEWS CACHE ─────────────────────────────────
-def update_news_cache(stock_df):
-    if os.path.exists(CSV_NEWS):
-        news_df = pd.read_csv(CSV_NEWS)
-    else:
-        news_df = pd.DataFrame(columns=["Ticker", "Date", "Headline"])
-
-    new_rows = []
-    all_dates = stock_df["Date"].astype(str).unique()
-
-    for ticker in TICKERS:
-        existing = news_df[(news_df.Ticker == ticker)]["Date"].unique()
-        missing = sorted(set(all_dates) - set(existing))
-
-        for date in missing:
-            headlines = fetch_headlines_for_date(date, ticker)
-            for h in headlines:
-                new_rows.append({"Ticker": ticker, "Date": date, "Headline": h})
-
-    if new_rows:
-        news_df = pd.concat([news_df, pd.DataFrame(new_rows)], ignore_index=True)
-        news_df.to_csv(CSV_NEWS, index=False)
-        print(f"📰 Added {len(new_rows)} new headlines to {CSV_NEWS}.")
-    else:
-        print("✅ No new headlines to fetch.")
-
-    return news_df
-
-# ────── 4. BUILD SENTIMENT DATASET ───────────────────────────
-def build_sentiment_dataset(stock_df, news_df):
+# ────── 3. BUILD SENTIMENT DATASET ───────────────────────────
+def build_sentiment_dataset(stock_df):
     analyzer = SentimentIntensityAnalyzer()
     rows = []
 
-    grouped = news_df.groupby(["Ticker", "Date"])
-
-    for (ticker, date), group in grouped:
-        headlines = group["Headline"].tolist()
-        sentiments = [analyzer.polarity_scores(h)["compound"] for h in headlines]
-        avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0
+    for ticker in TICKERS:
+        text = fetch_wikipedia_summary(ticker)
+        sentiment = analyzer.polarity_scores(text)["compound"] if text else 0
 
         try:
-            open_px = stock_df.loc[stock_df["Date"] == date, f"{ticker}_Open"].values[0]
-            close_px = stock_df.loc[stock_df["Date"] == date, f"{ticker}_Close"].values[0]
-            direction = 1 if close_px > open_px else 0
-            rows.append([ticker, date, avg_sentiment, direction])
-        except IndexError:
-            continue
+            df = stock_df[["Date", f"{ticker}_Open", f"{ticker}_Close"]].dropna()
+            for _, row in df.iterrows():
+                direction = 1 if row[f"{ticker}_Close"] > row[f"{ticker}_Open"] else 0
+                rows.append([ticker, row["Date"], sentiment, direction])
+        except Exception as e:
+            print(f"⚠️ Error processing {ticker}: {e}")
 
     result_df = pd.DataFrame(rows, columns=["Ticker", "Date", "Sentiment", "Direction"])
-    result_df.to_csv(CSV_FINAL, index=False)
-    print(f"💾 Saved sentiment data to {CSV_FINAL} with {len(result_df)} rows.")
+    result_df.to_csv(CSV_WIKI, index=False)
+    print(f"💾 Saved Wikipedia sentiment data to {CSV_WIKI} with {len(result_df)} rows.")
     return result_df
 
-# ────── 5. TRAIN & SAVE MODEL ────────────────────────────────
+# ────── 4. TRAIN & SAVE MODEL ────────────────────────────────
 def train_model(df):
     if df.empty or len(df["Direction"].unique()) < 2:
         print("⚠️  Not enough data to train model.")
@@ -154,9 +112,8 @@ def train_model(df):
 
 # ────── MAIN EXECUTION ───────────────────────────────────────
 if __name__ == "__main__":
-    print("🚀 Starting Sentiment-Stock Pipeline")
+    print("🚀 Starting Wikipedia Sentiment-Stock Pipeline")
     stock_df = update_stock_history()
-    news_df = update_news_cache(stock_df)
-    sentiment_df = build_sentiment_dataset(stock_df, news_df)
+    sentiment_df = build_sentiment_dataset(stock_df)
     train_model(sentiment_df)
     print("✅ Pipeline finished.")
