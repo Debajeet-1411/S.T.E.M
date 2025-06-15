@@ -1,138 +1,130 @@
-# AI Stock‑&‑Crypto Price Predictor
 
-> **Predict next‑quarter prices for multiple assets (Apple, Microsoft, Tesla, Alphabet & Bitcoin) using 3‑month historical data.**
+# 📊 Stock Sentiment Analyzer using Wikipedia (GSoC 2025 Project)
 
----
-
-## 🚀 Project Overview
-
-This repo demonstrates a **minimal, end‑to‑end pipeline** that:
-
-1. **Downloads** 3‑month OHLCV data from Yahoo Finance (`yfinance`).
-2. **Pre‑processes** it into sliding windows (last 4 quarters → next quarter).
-3. **Trains** a baseline model (Random Forest Regressor).
-4. **Predicts** the next 3‑month closing price for each ticker.
-
-The goal is to serve as a *learning scaffold*—you can swap in news‑sentiment features, LSTMs, Transformers, AutoML, etc.
+This project is a pipeline that fetches historical stock data, extracts sentiment from Wikipedia content related to selected companies, and trains a logistic regression model to predict stock movement direction based on sentiment. It also includes a user-friendly **Streamlit interface** for interaction and visualization.
 
 ---
 
-## ✨ Key Features
+## 🚀 Features
 
-| Feature              | Details                                   |
-| -------------------- | ----------------------------------------- |
-| Multi‑asset download | AAPL, MSFT, TSLA, GOOGL, BTC‑USD          |
-| Custom date window   | 2021‑01‑01 → 2025‑06‑14 by default        |
-| 3‑month interval     | `interval="3mo"` for macro‑trend focus    |
-| Baseline ML model    | `sklearn.RandomForestRegressor`           |
-| Sliding‑window prep  | Past 4 quarters → next quarter target     |
-| Reproducible env     | `requirements.txt` + `.venv` instructions |
+- ✅ Fetches and updates historical stock data daily using Yahoo Finance
+- ✅ Extracts Wikipedia summaries for major tech companies
+- ✅ Performs sentiment analysis using VADER on the Wikipedia content
+- ✅ Builds a dataset linking sentiment scores to stock price movements
+- ✅ Trains a Logistic Regression model to predict upward or downward price movement
+- ✅ Saves trained model using `joblib`
+- ✅ Provides a responsive **web UI** via Streamlit
+- ✅ Automatically runs the update pipeline every day at **6 PM**
+- 🔄 Future scope: pattern-based predictions from stock graphs
 
 ---
 
-## 🗂️ Project Structure
+## 📂 Folder Structure
 
-```text
-📂 ai‑price‑predictor/
-├─ README.md            ←‑ you are here
-├─ requirements.txt     ←‑ packages (numpy, pandas, yfinance, scikit‑learn)
-├─ data/                ←‑ cached price CSVs (auto‑created)
-├─ notebooks/
-│   └─ 01_quickstart.ipynb
-├─ src/
-│   ├─ fetch.py         ←‑ download & cache raw data
-│   ├─ features.py      ←‑ build sliding windows
-│   ├─ model.py         ←‑ train + predict + save model
-│   └─ main.py          ←‑ CLI glue (fetch → train → predict)
-└─ outputs/
-    └─ predictions.csv  ←‑ next‑quarter forecast
+```
+GSOC/
+├── main.py                 # Main pipeline script (data + training)
+├── app.py                  # Streamlit app for UI
+├── sentiment_stock_model.joblib  # Trained ML model
+├── stock_data.csv          # Historical stock data
+├── wiki_sentiment.csv      # Sentiment + direction dataset
+├── schedule_task.bat       # Scheduler script for Windows (optional)
+├── README.md               # You are here!
 ```
 
 ---
 
 ## 🛠️ Requirements
 
-```bash
-Python >= 3.9
-pip >= 23
-```
-
-All dependencies are open‑source and free.
-
----
-
-## ⚙️ Installation
+Install the required packages using:
 
 ```bash
-# 1. clone
-git clone https://github.com/yourname/ai-price-predictor.git
-cd ai-price-predictor
-
-# 2. create + activate virtual env (Windows example)
-python -m venv .venv
-.venv\Scripts\Activate.ps1  # or .venv\Scripts\activate.bat
-
-# 3. install deps
-pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-*If PowerShell blocks script activation, run* `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` *once.*
+Sample `requirements.txt`:
+```text
+pandas
+yfinance
+wikipedia
+scikit-learn
+vaderSentiment
+joblib
+streamlit
+```
 
 ---
 
-## 🏃 Quick Start (CLI)
+## 💡 How It Works
+
+### 1. Update Stock History
+Downloads daily stock data for the tickers:
+```python
+["TSLA", "GOOGL", "AAPL", "AMZN", "MSFT"]
+```
+Using Yahoo Finance (`yfinance`) and stores in `stock_data.csv`.
+
+---
+
+### 2. Fetch Wikipedia Sentiment
+For each company, fetches up to 3000 characters from its Wikipedia summary and runs VADER sentiment analysis. Example:
+
+- **Ticker**: `TSLA`
+- **Sentiment Score**: `0.63`
+
+---
+
+### 3. Train Model
+Builds a dataset with:
+- Date
+- Ticker
+- Sentiment Score
+- Direction (1 if Close > Open, else 0)
+
+Then trains a **Logistic Regression model** using `scikit-learn`.
+
+---
+
+### 4. Run the Web App
 
 ```bash
-python src/main.py --tickers AAPL MSFT TSLA GOOGL BTC-USD \
-                   --start 2021-01-01 --end 2025-06-14 \
-                   --interval 3mo
-
-cat outputs/predictions.csv
+streamlit run app.py
 ```
 
----
-
-## 📑 How It Works
-
-1. `` pulls raw OHLCV data via `yfinance.download()` with `group_by="ticker"` and `auto_adjust=True`.
-2. `` constructs supervised pairs `(X, y)` where:
-   - `X` = prices for quarters *t‑4 … t‑1*
-   - `y` = price at quarter *t*
-3. `` fits a `RandomForestRegressor` and saves a `joblib` model.
-4. `` orchestrates the pipeline and writes `outputs/predictions.csv`.
+Features:
+- Button to run the full pipeline (update → sentiment → train)
+- Shows success messages and logs
+- Ready to integrate graphs, predictions, and more!
 
 ---
 
-## 📈 Sample Prediction (Apple)
+## 🔁 Automating Daily Updates
 
-```text
-Date,Actual,Predicted
-2024-07-01,195.56,193.12
-2024-10-01,189.89,191.77
-🔮 Next (2025‑07‑01),–,198.34
-```
+A scheduled task runs `main.py` every day at 6 PM.
 
-> *Baseline RMSE ≈ 5.8. Expect better accuracy once you add sentiment or tech indicators.*
+You can use:
+- `schedule` module for Python automation
+- `cron` (Linux/macOS)
+- `Task Scheduler` (Windows with `.bat` file)
 
 ---
 
-## 🛣️ Next Steps & Ideas
+## 📌 Future Plans
 
-- **Add news sentiment** (HuggingFace FinBERT) to features.
-- Swap model for **LSTM** or **Temporal Fusion Transformer**.
-- Tune hyper‑params with **Optuna**.
-- Deploy as **FastAPI** microservice + web dashboard.
-
----
-
-## 🤝 Contributing
-
-Pull requests welcome! Please open an issue first to discuss what you’d like to change.
+- 📈 Graph-based pattern recognition and predictions
+- 📉 Compare sentiment predictions with actual market movement
+- 📊 Visual analytics dashboard in Streamlit
+- 🌐 Optional API support for integrating external sources (e.g., GDELT, NewsAPI)
 
 ---
 
-## 🪪 License
+## 👨‍💻 Author
 
-MIT — see `LICENSE` file for details.
+**Debajeet Mandal**  
+*Google Summer of Code 2025 Contributor*
 
+---
+
+## 📃 License
+
+This project is open-sourced under the MIT License.
