@@ -1,27 +1,17 @@
 import yfinance as yf
+from datetime import datetime
+import pandas as pd
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
-# List of ticker symbols
-tickers = ["AAPL", "MSFT", "TSLA", "GOOGL", "BTC-USD"]
+# Get today's date dynamically
+today = datetime.today().strftime('%Y-%m-%d')
+# Get historical data for Tesla, Google, Apple, Amazon and Microsoft
+data = yf.download(["TSLA", "GOOGL", "AAPL", "AMZN", "MSFT"], start="2022-01-01", end=today, interval="1d")
+data.to_csv("stock_data.csv")
+print(data.head())
+print("Stock data saved to 'stock_data.csv'")
 
-# Download all ticker data at once
-df_all = yf.download(
-    tickers,
-    start="2021-01-01",
-    end="2025-06-14",
-    interval="3mo",
-    group_by="ticker",   # Important for multiple stocks
-    auto_adjust=True     # Adjust for splits/dividends
-)
 
-# Keep only the 'Close' price for each stock
-df_prices = {}
 
-for ticker in tickers:
-    df_prices[ticker] = df_all[ticker][["Close"]].rename(columns={"Close": ticker})
 
-# Combine all Close prices into a single DataFrame
-from functools import reduce
-df_merged = reduce(lambda left, right: left.join(right, how='outer'), df_prices.values())
 
-# Display the final combined table
-print(df_merged)
