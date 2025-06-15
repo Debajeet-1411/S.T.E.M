@@ -39,4 +39,4 @@ prediction = model.predict([[custom_sentiment]])
 label = "📈 Rise" if prediction[0] == 1 else "📉 Fall"
 st.metric("Model Prediction", label)
 
-st.caption("Made with ❤️ for GSoC project exploration")
+st.caption("Made with ❤️ for S.T.E.M project exploration -by Debajeet Mandal")
