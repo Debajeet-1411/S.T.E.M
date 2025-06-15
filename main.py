@@ -1,44 +1,36 @@
-# gdelt_sentiment_pipeline.py
-# ────────────────────────────────────────────────────────────────────────────
-# Requirements (install once):
-#   pip install yfinance pandas requests python-dateutil vaderSentiment
-#   pip install scikit-learn joblib tqdm
-
-import os, time, csv, joblib, requests, yfinance as yf, pandas as pd
+import os
+import requests
+import pandas as pd
+import joblib
+import yfinance as yf
 from datetime import datetime, timedelta
-from dateutil import parser
-from tqdm import tqdm
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, accuracy_score
 
-# ─────────────── CONFIG ────────────────────────────────────────────────────
-TICKERS     = ["TSLA", "GOOGL", "AAPL", "AMZN", "MSFT"]
-CSV_STOCK   = "stock_data.csv"
-CSV_NEWS    = "news_head.csv"
-MODEL_FILE  = "sentiment_stock_model.joblib"
+# ────── CONFIGURATION ─────────────────────────────────────────
+TICKERS = ["TSLA", "GOOGL", "AAPL", "AMZN", "MSFT"]
+CSV_STOCK = "stock_data.csv"
+CSV_NEWS = "NEWS_HEAD.csv"
+CSV_FINAL = "sentiment_vs_stock.csv"
+MODEL_FILE = "sentiment_stock_model.joblib"
+NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")  # Set this env variable or hardcode your key
+NEWDATA_API_KEY = "YOUR_NEWSDATA_API_KEY"  # Replace with your NewsData.io API key
 
-GDELT_URL   = "https://api.gdeltproject.org/api/v2/doc/doc"
-MAX_ARTS    = 250          # per‑query cap
-REQ_SLEEP   = 0.5          # seconds between API calls (politeness)
-
-# ─────────────── STOCK SECTION ─────────────────────────────────────────────
+# ────── 1. UPDATE STOCK HISTORY ──────────────────────────────
 def update_stock_history():
-    """Download any missing OHLC rows & merge into CSV_STOCK."""
     if os.path.exists(CSV_STOCK):
         hist = pd.read_csv(CSV_STOCK, parse_dates=["Date"])
-        last_dt = hist["Date"].max().date()
-        start_dt = last_dt + timedelta(days=1)
-        print(f"[STOCK] Updating from {start_dt} …")
+        last_date = hist["Date"].max().date()
+        start_dt = last_date + timedelta(days=1)
     else:
         hist = pd.DataFrame()
         start_dt = datetime(2022, 1, 1).date()
-        print("[STOCK] No CSV found – downloading full history from 2022‑01‑01.")
 
     end_dt = datetime.today().date()
     if start_dt > end_dt:
-        print("[STOCK] File already up‑to‑date.")
+        print("✅ Stock data already up to date.")
         return hist
 
     df = yf.download(
@@ -49,118 +41,167 @@ def update_stock_history():
         group_by="ticker",
         progress=False
     )
-    df.columns = [f"{t}_{c}" for t, c in df.columns]        # flatten MultiIndex
-    df = df.reset_index().rename(columns={"Date": "Date"})
 
-    merged = pd.concat([hist, df], ignore_index=True).drop_duplicates(subset=["Date"])
+    df.columns = [f"{ticker}_{col}" for ticker, col in df.columns]
+    df = df.reset_index().rename(columns={"Date": "Date"})
+    merged = pd.concat([hist, df], ignore_index=True)
+    merged = merged.drop_duplicates(subset=["Date"])
     merged.to_csv(CSV_STOCK, index=False)
-    print(f"[STOCK] CSV now holds {len(merged)} trading days.")
+    print(f"📈 Stock data updated with {len(merged) - len(hist)} new rows.")
     return merged
 
-# ─────────────── NEWS SECTION ──────────────────────────────────────────────
-def gdelt_day_query(keyword: str, day: datetime.date):
-    """Return list[(ticker, date_str, headline, url)] for that ticker‑day."""
-    start = day.strftime("%Y%m%d") + "000000"
-    end   = day.strftime("%Y%m%d") + "235959"
-    params = dict(query=keyword, mode="ArtList", format="json",
-                  maxrecords=MAX_ARTS, startdatetime=start, enddatetime=end)
-    resp = requests.get(GDELT_URL, params=params, timeout=30)
-    resp.raise_for_status()
-    arts = resp.json().get("articles", [])
-    return [(keyword, day.strftime("%Y-%m-%d"), a["title"], a.get("url", "")) for a in arts]
+# ────── 2. FETCH HEADLINES ───────────────────────────────────
+def fetch_headlines_for_date(date: str, ticker: str):
+    date_str = date.replace("-", "")
+    search_term = f'"{ticker}"'
+    headlines = []
 
-def update_news_headlines():
-    """
-    Ensure news_head.csv has every headline for the last 90 days (per ticker),
-    while keeping older ones previously saved.
-    """
-    today = datetime.today().date()
-    start_window = today - timedelta(days=89)
+    # ───── GDELT TRY ─────
+    gdelt_url = (
+        f"https://api.gdeltproject.org/api/v2/doc/doc?query={search_term}"
+        f"&mode=artlist&maxrecords=100&format=json&startdatetime={date_str}000000"
+        f"&enddatetime={date_str}235959"
+    )
 
-    # Load existing rows into a set for fast de‑duplication
-    existing = set()
-    if os.path.exists(CSV_NEWS) and os.path.getsize(CSV_NEWS) > 0:
-        old = pd.read_csv(CSV_NEWS)
-        existing = set(zip(old.Ticker, old.Date, old.Headline))
+    try:
+        response = requests.get(gdelt_url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if "articles" in data:
+                headlines = [a["title"] for a in data["articles"] if "title" in a]
+                if headlines:
+                    return headlines
+        else:
+            print(f"⚠️  GDELT returned status {response.status_code} for {ticker} on {date}")
+    except Exception as e:
+        print(f"⚠️  GDELT failed for {ticker} on {date}: {e}")
+
+    # ───── NewsAPI TRY ─────
+    if NEWSAPI_KEY:
+        try:
+            url = (
+                f"https://newsapi.org/v2/everything?q={ticker}&from={date}&to={date}"
+                f"&sortBy=publishedAt&language=en&apiKey={NEWSAPI_KEY}"
+            )
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                articles = data.get("articles", [])
+                headlines = [a["title"] for a in articles if "title" in a]
+                if headlines:
+                    return headlines
+            else:
+                print(f"❌ NewsAPI error {response.status_code} for {ticker} on {date}")
+        except Exception as e:
+            print(f"❌ NewsAPI fetch failed for {ticker} on {date}: {e}")
+    else:
+        print(f"❌ No NewsAPI key set.")
+
+    # ───── NewsData.io FALLBACK ─────
+    try:
+        url = (
+            f"https://newsdata.io/api/1/news?apikey={NEWDATA_API_KEY}"
+            f"&q={ticker}&language=en&from_date={date}&to_date={date}&category=business"
+        )
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            results = data.get("results", [])
+            headlines = [item["title"] for item in results if "title" in item]
+            if headlines:
+                print(f"✅ NewsData.io fallback used for {ticker} on {date}")
+                return headlines
+            else:
+                print(f"⚠️ NewsData.io found no articles for {ticker} on {date}")
+        else:
+            print(f"❌ NewsData.io error {response.status_code} for {ticker} on {date}")
+    except Exception as e:
+        print(f"❌ NewsData.io fetch failed for {ticker} on {date}: {e}")
+
+    return []
+
+# ────── 3. UPDATE NEWS CACHE ─────────────────────────────────
+def update_news_cache(stock_df):
+    if os.path.exists(CSV_NEWS):
+        news_df = pd.read_csv(CSV_NEWS)
+    else:
+        news_df = pd.DataFrame(columns=["Ticker", "Date", "Headline"])
 
     new_rows = []
-    bar = tqdm(total=90 * len(TICKERS), desc="News fetch")
-    for d in (start_window + timedelta(days=i) for i in range(90)):
-        for tk in TICKERS:
-            try:
-                for rec in gdelt_day_query(tk, d):
-                    if (rec[0], rec[1], rec[2]) not in existing:
-                        new_rows.append(rec)
-                time.sleep(REQ_SLEEP)
-            except Exception as e:
-                print(f"[WARN] {tk} {d}: {e}")
-            bar.update(1)
-    bar.close()
+    all_dates = stock_df["Date"].astype(str).unique()
 
-    # Append new rows
-    mode = "a" if os.path.exists(CSV_NEWS) else "w"
-    with open(CSV_NEWS, mode, newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        if mode == "w":
-            w.writerow(["Ticker", "Date", "Headline", "URL"])
-        w.writerows(new_rows)
-    print(f"[NEWS] Added {len(new_rows)} new headlines to {CSV_NEWS}")
+    for ticker in TICKERS:
+        existing = news_df[(news_df.Ticker == ticker)]["Date"].unique()
+        missing = sorted(set(all_dates) - set(existing))
 
-    return pd.read_csv(CSV_NEWS, parse_dates=["Date"])
+        for date in missing:
+            headlines = fetch_headlines_for_date(date, ticker)
+            for h in headlines:
+                new_rows.append({"Ticker": ticker, "Date": date, "Headline": h})
 
-# ─────────────── SENTIMENT MERGE ───────────────────────────────────────────
-def build_sentiment_dataset(stock_df: pd.DataFrame, news_df: pd.DataFrame):
-    """Return DataFrame [Ticker, Date, Sentiment, Direction]."""
+    if new_rows:
+        news_df = pd.concat([news_df, pd.DataFrame(new_rows)], ignore_index=True)
+        news_df.to_csv(CSV_NEWS, index=False)
+        print(f"📰 Added {len(new_rows)} new headlines to {CSV_NEWS}.")
+    else:
+        print("✅ No new headlines to fetch.")
+
+    return news_df
+
+# ────── 4. BUILD SENTIMENT DATASET ───────────────────────────
+def build_sentiment_dataset(stock_df, news_df):
     analyzer = SentimentIntensityAnalyzer()
-
-    # Group all headlines per ticker‑day
-    grouped = (news_df.groupby(["Ticker", news_df["Date"].dt.strftime("%Y-%m-%d")])
-                       ["Headline"].apply(list)
-                       .reset_index())
-
     rows = []
-    for _, rec in grouped.iterrows():
-        date_str = rec["Date"]
-        if date_str not in stock_df["Date"].astype(str).values:
-            continue                                # skip weekends/holidays
 
-        scores = [analyzer.polarity_scores(h)["compound"] for h in rec["Headline"]]
-        sentiment = sum(scores) / len(scores)
+    grouped = news_df.groupby(["Ticker", "Date"])
 
-        open_px  = stock_df.loc[stock_df["Date"] == date_str, f"{rec['Ticker']}_Open"].values[0]
-        close_px = stock_df.loc[stock_df["Date"] == date_str, f"{rec['Ticker']}_Close"].values[0]
-        direction = 1 if close_px > open_px else 0
+    for (ticker, date), group in grouped:
+        headlines = group["Headline"].tolist()
+        sentiments = [analyzer.polarity_scores(h)["compound"] for h in headlines]
+        avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0
 
-        rows.append([rec["Ticker"], date_str, sentiment, direction])
+        try:
+            open_px = stock_df.loc[stock_df["Date"] == date, f"{ticker}_Open"].values[0]
+            close_px = stock_df.loc[stock_df["Date"] == date, f"{ticker}_Close"].values[0]
+            direction = 1 if close_px > open_px else 0
+            rows.append([ticker, date, avg_sentiment, direction])
+        except IndexError:
+            continue
 
-    ds = pd.DataFrame(rows, columns=["Ticker", "Date", "Sentiment", "Direction"])
-    print(f"[DATA] Built sentiment dataset: {len(ds)} rows.")
-    return ds
+    result_df = pd.DataFrame(rows, columns=["Ticker", "Date", "Sentiment", "Direction"])
+    result_df.to_csv(CSV_FINAL, index=False)
+    print(f"💾 Saved sentiment data to {CSV_FINAL} with {len(result_df)} rows.")
+    return result_df
 
-# ─────────────── MODEL TRAINING ───────────────────────────────────────────
-def train_and_save(df: pd.DataFrame):
-    if len(df["Direction"].unique()) < 2:
-        print("[MODEL] Need both up & down classes to train.")
+# ────── 5. TRAIN & SAVE MODEL ────────────────────────────────
+def train_model(df):
+    if df.empty or len(df["Direction"].unique()) < 2:
+        print("⚠️  Not enough data to train model.")
         return
-    X, y = df[["Sentiment"]].values, df["Direction"].values
-    X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.25,
-                                              stratify=y, random_state=42)
-    clf = LogisticRegression()
-    clf.fit(X_tr, y_tr)
 
-    print("\n[MODEL] Evaluation")
-    print(classification_report(y_te, clf.predict(X_te), digits=3))
-    print("Accuracy:", accuracy_score(y_te, clf.predict(X_te)))
+    X = df[["Sentiment"]].values
+    y = df["Direction"].values
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y)
+
+    clf = LogisticRegression()
+    clf.fit(X_train, y_train)
+
+    y_pred = clf.predict(X_test)
+
+    print("📊 Classification Report:")
+    print(classification_report(y_test, y_pred))
+    print("✅ Accuracy:", accuracy_score(y_test, y_pred))
 
     joblib.dump(clf, MODEL_FILE)
-    print(f"[MODEL] Saved → {MODEL_FILE}")
+    print(f"✅ Model saved to {MODEL_FILE}")
 
-# ─────────────── MAIN PIPELINE ────────────────────────────────────────────
+# ────── MAIN EXECUTION ───────────────────────────────────────
 if __name__ == "__main__":
+    print("🚀 Starting Sentiment-Stock Pipeline")
     stock_df = update_stock_history()
-    news_df  = update_news_headlines()
-    ds       = build_sentiment_dataset(stock_df, news_df)
-    if ds.empty:
-        print("[PIPE] No overlapping sentiment‑price rows yet.")
-    else:
-        train_and_save(ds)
+    news_df = update_news_cache(stock_df)
+    sentiment_df = build_sentiment_dataset(stock_df, news_df)
+    train_model(sentiment_df)
+    print("✅ Pipeline finished.")
