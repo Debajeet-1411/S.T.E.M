@@ -15,8 +15,7 @@ CSV_STOCK = "stock_data.csv"
 CSV_NEWS = "NEWS_HEAD.csv"
 CSV_FINAL = "sentiment_vs_stock.csv"
 MODEL_FILE = "sentiment_stock_model.joblib"
-NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")  # Set this env variable or hardcode your key
-NEWDATA_API_KEY = "YOUR_NEWSDATA_API_KEY"  # Replace with your NewsData.io API key
+NEWS_API_KEY = "pub_473f7f62848e462cb19ac6c0c3211955"  # Replace with your actual NewsAPI key
 
 # ────── 1. UPDATE STOCK HISTORY ──────────────────────────────
 def update_stock_history():
@@ -52,36 +51,13 @@ def update_stock_history():
 
 # ────── 2. FETCH HEADLINES ───────────────────────────────────
 def fetch_headlines_for_date(date: str, ticker: str):
-    date_str = date.replace("-", "")
-    search_term = f'"{ticker}"'
     headlines = []
 
-    # ───── GDELT TRY ─────
-    gdelt_url = (
-        f"https://api.gdeltproject.org/api/v2/doc/doc?query={search_term}"
-        f"&mode=artlist&maxrecords=100&format=json&startdatetime={date_str}000000"
-        f"&enddatetime={date_str}235959"
-    )
-
-    try:
-        response = requests.get(gdelt_url, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            if "articles" in data:
-                headlines = [a["title"] for a in data["articles"] if "title" in a]
-                if headlines:
-                    return headlines
-        else:
-            print(f"⚠️  GDELT returned status {response.status_code} for {ticker} on {date}")
-    except Exception as e:
-        print(f"⚠️  GDELT failed for {ticker} on {date}: {e}")
-
-    # ───── NewsAPI TRY ─────
-    if NEWSAPI_KEY:
+    if NEWS_API_KEY:
         try:
             url = (
                 f"https://newsapi.org/v2/everything?q={ticker}&from={date}&to={date}"
-                f"&sortBy=publishedAt&language=en&apiKey={NEWSAPI_KEY}"
+                f"&sortBy=publishedAt&language=en&apiKey={NEWS_API_KEY}"
             )
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
@@ -96,27 +72,6 @@ def fetch_headlines_for_date(date: str, ticker: str):
             print(f"❌ NewsAPI fetch failed for {ticker} on {date}: {e}")
     else:
         print(f"❌ No NewsAPI key set.")
-
-    # ───── NewsData.io FALLBACK ─────
-    try:
-        url = (
-            f"https://newsdata.io/api/1/news?apikey={NEWDATA_API_KEY}"
-            f"&q={ticker}&language=en&from_date={date}&to_date={date}&category=business"
-        )
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            results = data.get("results", [])
-            headlines = [item["title"] for item in results if "title" in item]
-            if headlines:
-                print(f"✅ NewsData.io fallback used for {ticker} on {date}")
-                return headlines
-            else:
-                print(f"⚠️ NewsData.io found no articles for {ticker} on {date}")
-        else:
-            print(f"❌ NewsData.io error {response.status_code} for {ticker} on {date}")
-    except Exception as e:
-        print(f"❌ NewsData.io fetch failed for {ticker} on {date}: {e}")
 
     return []
 
