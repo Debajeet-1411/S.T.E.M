@@ -3,128 +3,106 @@ import pandas as pd
 import joblib
 import plotly.graph_objects as go
 import wikipedia
-from datetime import datetime
+from datetime import datetime, timedelta
 from main import update_stock_history, build_sentiment_dataset
 
 st.set_page_config(page_title="Sentiment Stock Analyzer", layout="wide")
-st.title("📈 Sentiment-Based Stock Movement Prediction")
+st.title("📈 Sentiment‑Based Stock Movement Prediction")
 
-# ───── Load and Prepare Data ─────────────────────────────────
-with st.spinner("Loading stock and sentiment data..."):
+# ───── Mapping for full company names ───────────────────────
+TICKER_MAP = {
+    "TSLA": "Tesla, Inc.",
+    "GOOGL": "Alphabet Inc.",
+    "AAPL": "Apple Inc.",
+    "AMZN": "Amazon (company)",
+    "MSFT": "Microsoft Corporation"
+}
+
+# ───── Load and prepare data ────────────────────────────────
+with st.spinner("Loading data & model…"):
     stock_df = update_stock_history()
     sentiment_df = build_sentiment_dataset(stock_df)
     model = joblib.load("sentiment_stock_model.joblib")
 
-# ───── Sidebar: Ticker Selection ─────────────────────────────
-tickers = sentiment_df["Ticker"].unique()
-selected_ticker = st.sidebar.selectbox("Select a Stock Ticker", tickers)
+# ───── Sidebar: stock selector with full names ──────────────
+choices = [f"{TICKER_MAP[t]} ({t})" for t in TICKER_MAP]
+selection = st.sidebar.selectbox("Select a Stock", choices)
+selected_ticker = selection.split("(")[-1].rstrip(")")  # Extract ticker
+full_name = TICKER_MAP[selected_ticker]
 
-# ───── Ticker Info Card from Wikipedia ───────────────────────
+# ───── Company info card ────────────────────────────────────
 st.sidebar.markdown("---")
-st.sidebar.subheader("📚 Ticker Info")
+st.sidebar.subheader("🏷️ Company Info")
 try:
-    summary = wikipedia.summary(selected_ticker, sentences=2)
+    summary = wikipedia.summary(full_name, sentences=2)
     st.sidebar.info(summary)
-except:
+except Exception:
     st.sidebar.warning("No summary found on Wikipedia.")
 
-# ───── Date Range Filter ─────────────────────────────────────
+# ───── Date range filter ────────────────────────────────────
 min_date = pd.to_datetime(sentiment_df["Date"]).min()
 max_date = pd.to_datetime(sentiment_df["Date"]).max()
-date_range = st.sidebar.date_input("Filter by Date Range", [min_date, max_date], min_value=min_date, max_value=max_date)
+start_date, end_date = st.sidebar.date_input(
+    "Filter by Date Range",
+    [min_date, max_date],
+    min_value=min_date, max_value=max_date
+)
 
-# ───── Filter Data for Selected Ticker ──────────────────────
+# ───── Filter dataset ───────────────────────────────────────
 df = sentiment_df[(sentiment_df["Ticker"] == selected_ticker)].copy()
 df["Date"] = pd.to_datetime(df["Date"])
-df = df[(df["Date"] >= pd.to_datetime(date_range[0])) & (df["Date"] <= pd.to_datetime(date_range[1]))]
+df = df[(df["Date"] >= pd.to_datetime(start_date)) & (df["Date"] <= pd.to_datetime(end_date))]
 
-# ───── Show Candlestick Chart (Using Stock Data) ────────────
-st.subheader(f"📊 Candlestick Chart for {selected_ticker}")
-candlestick_df = stock_df[["Date", f"{selected_ticker}_Open", f"{selected_ticker}_High", f"{selected_ticker}_Low", f"{selected_ticker}_Close"]].dropna()
-candlestick_df = candlestick_df.rename(columns={
-    f"{selected_ticker}_Open": "Open",
-    f"{selected_ticker}_High": "High",
-    f"{selected_ticker}_Low": "Low",
-    f"{selected_ticker}_Close": "Close"
-})
-candlestick_df = candlestick_df[(candlestick_df["Date"] >= pd.to_datetime(date_range[0])) & (candlestick_df["Date"] <= pd.to_datetime(date_range[1]))]
+# ───── Candlestick chart with range slider ──────────────────
+st.subheader(f"🕯 Candlestick Chart · {full_name} ({selected_ticker})")
+cs = stock_df[["Date", f"{selected_ticker}_Open", f"{selected_ticker}_High", f"{selected_ticker}_Low", f"{selected_ticker}_Close"]].dropna()
+cs.columns = ["Date", "Open", "High", "Low", "Close"]
+cs = cs[(cs["Date"] >= pd.to_datetime(start_date)) & (cs["Date"] <= pd.to_datetime(end_date))]
 
-fig_candle = go.Figure(data=[
-    go.Candlestick(
-        x=candlestick_df["Date"],
-        open=candlestick_df["Open"],
-        high=candlestick_df["High"],
-        low=candlestick_df["Low"],
-        close=candlestick_df["Close"],
-        increasing_line_color='green',
-        decreasing_line_color='red',
-        name='Price'
-    )
-])
+fig_candle = go.Figure(go.Candlestick(
+    x=cs["Date"], open=cs["Open"], high=cs["High"], low=cs["Low"], close=cs["Close"],
+    increasing_line_color="green", decreasing_line_color="red"))
 fig_candle.update_layout(
-    xaxis_title="Date",
-    yaxis_title="Price (USD)",
-    template="plotly_white",
-    height=500
-)
+    template="plotly_white", height=450,
+    xaxis_title="Date", yaxis_title="Price (USD)",
+    xaxis_rangeslider_visible=True)
 st.plotly_chart(fig_candle, use_container_width=True)
 
-# ───── Sentiment vs Stock Direction ─────────────────────────
-st.subheader("📉 Sentiment Score vs Stock Movement")
-fig_sentiment = go.Figure()
-fig_sentiment.add_trace(go.Scatter(
-    x=df["Date"],
-    y=df["Sentiment"],
-    mode="lines+markers",
-    name="Sentiment Score",
-    line=dict(color="blue")
-))
-fig_sentiment.add_trace(go.Scatter(
-    x=df["Date"],
-    y=df["Direction"],
-    mode="lines+markers",
-    name="Stock Movement (1 = Up, 0 = Down)",
-    yaxis="y2",
-    line=dict(color="green", dash="dot")
-))
-fig_sentiment.update_layout(
-    xaxis=dict(title="Date"),
-    yaxis=dict(title="Sentiment", side="left"),
-    yaxis2=dict(title="Movement", overlaying="y", side="right", range=[-0.2, 1.2]),
-    legend=dict(x=0.01, y=1),
-    height=500,
-    template="plotly_white"
-)
-st.plotly_chart(fig_sentiment, use_container_width=True)
+# ───── Sentiment vs movement with range slider ──────────────
+st.subheader("📉 Sentiment Score vs Movement")
+fig_sent = go.Figure()
+fig_sent.add_trace(go.Scatter(x=df["Date"], y=df["Sentiment"], mode="lines", name="Sentiment", line=dict(color="blue")))
+fig_sent.add_trace(go.Scatter(x=df["Date"], y=df["Direction"], mode="lines", name="Direction (1=Up)", yaxis="y2", line=dict(color="green", dash="dot")))
+fig_sent.update_layout(
+    template="plotly_white", height=450,
+    xaxis=dict(title="Date", rangeslider=dict(visible=True)),
+    yaxis=dict(title="Sentiment"),
+    yaxis2=dict(title="Movement", overlaying="y", side="right", range=[-0.2, 1.2]))
+st.plotly_chart(fig_sent, use_container_width=True)
 
-st.markdown("""
-> **ℹ️ Tip**: Sentiment score ranges from -1 (very negative) to 1 (very positive). 
-> A direction of 1 indicates the stock closed higher than it opened.
-""")
+# ───── Trend summary ────────────────────────────────────────
+if not df.empty:
+    trend = "🔺 Bullish" if df["Sentiment"].iloc[-1] > df["Sentiment"].iloc[0] else "🔻 Bearish"
+    st.info(f"Overall sentiment trend over selected period: {trend}")
 
-# ───── Trend Summary ────────────────────────────────────────
-if len(df) > 2:
-    trend_diff = df.iloc[-1]["Sentiment"] - df.iloc[0]["Sentiment"]
-    trend = "🔺 Bullish" if trend_diff > 0 else "🔻 Bearish"
-    st.info(f"Trend from {date_range[0]} to {date_range[1]}: {trend}")
+# ───── Prediction slider & future projection ────────────────
+st.subheader("🔮 Predict Direction & 10‑Day Outlook")
+custom_sent = st.slider("Sentiment Score", -1.0, 1.0, 0.0, 0.01)
+prob = model.predict_proba([[custom_sent]])[0]
+label = "Rise" if prob.argmax() == 1 else "Fall"
+color = "green" if label == "Rise" else "red"
 
-# ───── Prediction from Custom Sentiment ─────────────────────
-st.subheader("🔮 Predict Market Direction from Sentiment")
-custom_sentiment = st.slider("Adjust Sentiment Score", -1.0, 1.0, 0.0, 0.01)
-pred_proba = model.predict_proba([[custom_sentiment]])[0]
-pred_label = model.predict([[custom_sentiment]])[0]
+st.metric(label="Prediction", value=f"📈 {label}" if label=="Rise" else f"📉 {label}")
+st.progress(prob.max())
 
-color = "green" if pred_label == 1 else "red"
-label_text = "📈 Likely to Rise" if pred_label == 1 else "📉 Likely to Fall"
+# Future hourly prediction (simple demo using same probability)
+future_hours = pd.date_range(datetime.now(), periods=10*24, freq="H")
+outlook = pd.DataFrame({"Datetime": future_hours, "ProbRise": prob[1]})
+fig_future = go.Figure(go.Scatter(x=outlook["Datetime"], y=outlook["ProbRise"], mode="lines", line=dict(color="purple")))
+fig_future.update_layout(template="plotly_white", height=350, yaxis_title="Probability of Rise", xaxis_title="Future (10 days, hourly)")
+st.plotly_chart(fig_future, use_container_width=True)
 
-st.metric("Prediction", label_text)
-st.progress(pred_proba[pred_label])
+# ───── Download dataset ─────────────────────────────────────
+st.download_button("📥 Download Filtered Dataset", df.to_csv(index=False), file_name=f"{selected_ticker}_sentiment.csv")
 
-with st.expander("📖 How is this prediction made?"):
-    st.write("The model uses past sentiment scores from news articles and Wikipedia summaries to learn patterns associated with stock movements. A logistic regression (or similar model) was trained to understand this relationship. Adjust the slider above to simulate different sentiment scenarios.")
-
-# ───── Download Buttons ─────────────────────────────────────
-st.download_button("📥 Download Sentiment Dataset", df.to_csv(index=False), file_name="sentiment_data.csv")
-
-# ───── Footer ───────────────────────────────────────────────
 st.caption("Made with ❤️ using Streamlit · Wikipedia · YFinance · VADER · by Debajeet Mandal")

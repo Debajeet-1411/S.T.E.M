@@ -1,119 +1,112 @@
 import os
 import pandas as pd
-import joblib
 import yfinance as yf
-import wikipedia
 from datetime import datetime, timedelta
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-from sklearn.linear_model import LogisticRegression
+from textblob import TextBlob
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, accuracy_score
+from sklearn.metrics import accuracy_score, classification_report
+from sklearn.utils import resample
+import joblib
 
-# ────── CONFIGURATION ─────────────────────────────────────────
-TICKERS = ["TSLA", "GOOGL", "AAPL", "AMZN", "MSFT"]
-CSV_STOCK = "stock_data.csv"
-CSV_WIKI = "wiki_sentiment.csv"
-MODEL_FILE = "sentiment_stock_model.joblib"
+CSV_STOCK = "store_data.csv"
+MODEL_DIR = "models"
+os.makedirs(MODEL_DIR, exist_ok=True)
 
-# ────── 1. UPDATE STOCK HISTORY ──────────────────────────────
+TICKER_MAP = {
+    "AAPL": "Apple Inc.",
+    "GOOGL": "Alphabet Inc.",
+    "AMZN": "Amazon.com Inc.",
+    "MSFT": "Microsoft Corporation",
+    "TSLA": "Tesla Inc."
+}
+
+
 def update_stock_history():
-    if os.path.exists(CSV_STOCK):
-        hist = pd.read_csv(CSV_STOCK, parse_dates=["Date"])
-        last_date = hist["Date"].max().date()
-        start_dt = last_date + timedelta(days=1)
-    else:
-        hist = pd.DataFrame()
-        start_dt = datetime(2022, 1, 1).date()
+    tickers = list(TICKER_MAP.keys())
+    start = "2022-01-01"
+    end = datetime.today().strftime("%Y-%m-%d")
 
-    end_dt = datetime.today().date()
-    if start_dt > end_dt:
-        print("✅ Stock data already up to date.")
-        return hist
+    all_data = []
+    for ticker in tickers:
+        data = yf.download(ticker, start=start, end=end)
+        data = data.reset_index()
+        data["Ticker"] = ticker
+        all_data.append(data)
 
-    df = yf.download(
-        TICKERS,
-        start=start_dt.strftime("%Y-%m-%d"),
-        end=end_dt.strftime("%Y-%m-%d"),
-        interval="1d",
-        group_by="ticker",
-        progress=False
-    )
+    stock_df = pd.concat(all_data)
+    stock_df.to_csv(CSV_STOCK, index=False)
+    return stock_df
 
-    df.columns = [f"{ticker}_{col}" for ticker, col in df.columns]
-    df = df.reset_index().rename(columns={"Date": "Date"})
-    merged = pd.concat([hist, df], ignore_index=True)
-    merged = merged.drop_duplicates(subset=["Date"])
-    merged.to_csv(CSV_STOCK, index=False)
-    print(f"📈 Stock data updated with {len(merged) - len(hist)} new rows.")
-    return merged
 
-# ────── 2. FETCH WIKIPEDIA CONTENT ───────────────────────────
-def fetch_wikipedia_summary(ticker):
-    name_map = {
-        "TSLA": "Tesla, Inc.",
-        "GOOGL": "Alphabet Inc.",
-        "AAPL": "Apple Inc.",
-        "AMZN": "Amazon (company)",
-        "MSFT": "Microsoft"
-    }
-    try:
-        title = name_map.get(ticker, ticker)
-        summary = wikipedia.page(title).content
-        return summary[:3000]  # Limit to 3000 characters
-    except Exception as e:
-        print(f"❌ Wikipedia fetch failed for {ticker}: {e}")
-        return ""
+def calculate_sentiment(text):
+    return TextBlob(text).sentiment.polarity
 
-# ────── 3. BUILD SENTIMENT DATASET ───────────────────────────
+
 def build_sentiment_dataset(stock_df):
-    analyzer = SentimentIntensityAnalyzer()
-    rows = []
+    # Simulate dummy sentiment scores and headlines
+    stock_df = stock_df.copy()
+    stock_df["Headline"] = stock_df["Date"].astype(str) + " news for " + stock_df["Ticker"]
+    stock_df["Sentiment"] = stock_df["Headline"].apply(calculate_sentiment)
 
-    for ticker in TICKERS:
-        text = fetch_wikipedia_summary(ticker)
-        sentiment = analyzer.polarity_scores(text)["compound"] if text else 0
+    # Add direction
+    stock_df.sort_values(["Ticker", "Date"], inplace=True)
+    stock_df["Next Close"] = stock_df.groupby("Ticker")["Close"].shift(-1)
+    stock_df["Direction"] = (stock_df["Next Close"] > stock_df["Close"]).astype(int)
 
-        try:
-            df = stock_df[["Date", f"{ticker}_Open", f"{ticker}_Close"]].dropna()
-            for _, row in df.iterrows():
-                direction = 1 if row[f"{ticker}_Close"] > row[f"{ticker}_Open"] else 0
-                rows.append([ticker, row["Date"], sentiment, direction])
-        except Exception as e:
-            print(f"⚠️ Error processing {ticker}: {e}")
+    # Drop rows with NaN
+    stock_df.dropna(subset=["Next Close"], inplace=True)
 
-    result_df = pd.DataFrame(rows, columns=["Ticker", "Date", "Sentiment", "Direction"])
-    result_df.to_csv(CSV_WIKI, index=False)
-    print(f"💾 Saved Wikipedia sentiment data to {CSV_WIKI} with {len(result_df)} rows.")
-    return result_df
+    return stock_df[["Date", "Ticker", "Close", "Volume", "High", "Low", "Sentiment", "Direction"]]
 
-# ────── 4. TRAIN & SAVE MODEL ────────────────────────────────
-def train_model(df):
-    if df.empty or len(df["Direction"].unique()) < 2:
-        print("⚠️  Not enough data to train model.")
-        return
 
-    X = df[["Sentiment"]].values
-    y = df["Direction"].values
+def add_features(df):
+    df = df.copy()
+    df["Volatility"] = df["High"] - df["Low"]
+    df["Price Change"] = df["Close"].diff()
+    df["Rolling Sentiment"] = df.groupby("Ticker")["Sentiment"].transform(lambda x: x.rolling(3, min_periods=1).mean())
+    df.dropna(inplace=True)
+    return df
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y)
 
-    clf = LogisticRegression()
-    clf.fit(X_train, y_train)
+def train_models(df):
+    models = {}
+    for ticker in df["Ticker"].unique():
+        df_ticker = df[df["Ticker"] == ticker].copy()
 
-    y_pred = clf.predict(X_test)
+        # Balance classes
+        df_majority = df_ticker[df_ticker["Direction"] == 1]
+        df_minority = df_ticker[df_ticker["Direction"] == 0]
+        df_minority_upsampled = resample(df_minority, replace=True, n_samples=len(df_majority), random_state=42)
+        df_balanced = pd.concat([df_majority, df_minority_upsampled])
 
-    print("📊 Classification Report:")
-    print(classification_report(y_test, y_pred))
-    print("✅ Accuracy:", accuracy_score(y_test, y_pred))
+        # Train model
+        X = df_balanced[["Sentiment", "Volatility", "Price Change", "Rolling Sentiment"]]
+        y = df_balanced["Direction"]
 
-    joblib.dump(clf, MODEL_FILE)
-    print(f"✅ Model saved to {MODEL_FILE}")
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# ────── MAIN EXECUTION ───────────────────────────────────────
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
+        model.fit(X_train, y_train)
+
+        y_pred = model.predict(X_test)
+        acc = accuracy_score(y_test, y_pred)
+        print(f"✅ {ticker} Model Accuracy: {acc:.2f}")
+        print(classification_report(y_test, y_pred))
+
+        joblib.dump(model, f"{MODEL_DIR}/{ticker}_model.joblib")
+        models[ticker] = model
+    return models
+
+
 if __name__ == "__main__":
-    print("🚀 Starting Wikipedia Sentiment-Stock Pipeline")
+    print("🔄 Updating stock history...")
     stock_df = update_stock_history()
+
+    print("🧠 Building dataset with sentiment and features...")
     sentiment_df = build_sentiment_dataset(stock_df)
-    train_model(sentiment_df)
-    print("✅ Pipeline finished.")
+    feature_df = add_features(sentiment_df)
+
+    print("🚀 Training per-stock models...")
+    train_models(feature_df)
+    print("✅ All models trained and saved in 'models/' directory.")
