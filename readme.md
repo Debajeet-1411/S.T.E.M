@@ -1,5 +1,5 @@
 
-# 📊 Stock Sentiment Analyzer using Wikipedia (GSoC 2025 Project)
+# 📊 Stock Sentiment Analyzer using Wikipedia 
 
 This project is a pipeline that fetches historical stock data, extracts sentiment from Wikipedia content related to selected companies, and trains a logistic regression model to predict stock movement direction based on sentiment. It also includes a user-friendly **Streamlit interface** for interaction and visualization.
 
